@@ -1,293 +1,321 @@
-const express = require('express');
-const cors = require('cors');
-const bodyParser = require('body-parser');
+// server.js
+
+const express = require("express");
+const cors = require("cors");
+const bodyParser = require("body-parser");
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 
+// ---------------------
 // Middleware
+// ---------------------
 app.use(cors());
 app.use(bodyParser.json());
 
-// In-memory database
-let database = {
-    workers: {},
-    jobs: {},
-    payments: {},
-    config: {
-        freeJobsLimit: 3,
-        premiumPrice: 20,
-        maxDistanceKm: 10
-    }
-};
+// Add request logging middleware
+app.use((req, res, next) => {
+  console.log(`[${new Date().toISOString()}] ${req.method} ${req.path}`);
+  next();
+});
 
-// Health check
-app.get('/api/health', (req, res) => {
-    res.json({
-        success: true,
-        message: 'YMIT Backend Server is running',
-        timestamp: Date.now(),
-        version: '1.0.0'
+// ---------------------
+// In‑memory jobs store
+// ---------------------
+let jobs = [];
+
+/**
+ * Helper to build a normalized job object.
+ * If a jobId/serverId is supplied, that becomes the primary id.
+ */
+function createJobFromBody(body = {}) {
+  const now = Date.now();
+
+  // Prefer explicit IDs sent by client
+  const incomingId =
+    body.id ||
+    body.serverId ||
+    body.jobId ||
+    `JOB-${now}-${Math.random().toString(36).substring(2, 6).toUpperCase()}`;
+
+  return {
+    // Identifiers (server uses `id` as the single source of truth)
+    id: incomingId,
+    jobId: incomingId,
+
+    // Basic fields
+    title: body.title || body.serviceName || "Service Request",
+    serviceType: body.serviceType || "electronics",
+    serviceName: body.serviceName || "General Service",
+    customerName: body.customerName || "Customer",
+    contact: body.contact || "",
+    description: body.description || body.problemDetails || "",
+    amount: body.amount || "₹500 - ₹1500",
+
+    // Location
+    location: body.location || {
+      address: body.address || "Unknown address",
+      lat: body.lat || 0,
+      lng: body.lng || 0
+    },
+    locationCoords: body.locationCoords || {
+      lat: body.lat || 0,
+      lng: body.lng || 0
+    },
+
+    // Status & assignment
+    status: body.status || "available", // default so jobs can be accepted
+    assignedTo: body.assignedTo || null,
+
+    // Timestamps
+    createdAt: body.createdAt || now,
+    timestamp: body.timestamp || new Date(now).toLocaleString(),
+
+    // Optional worker/completion fields
+    workerId: body.workerId || null,
+    completionPhotoURL: body.completionPhotoURL || null,
+    earnings: body.earnings || 0,
+    timeSpent: body.timeSpent || 0,
+    acceptedAt: body.acceptedAt || null,
+    completedAt: body.completedAt || null
+  };
+}
+
+// -----------------------------
+// GET /api/jobs – list jobs
+// -----------------------------
+app.get("/api/jobs", (req, res) => {
+  console.log(`📋 Fetching ${jobs.length} jobs`);
+  res.json({
+    success: true,
+    data: jobs
+  });
+});
+
+// -----------------------------
+// POST /api/jobs – create job
+// -----------------------------
+app.post("/api/jobs", (req, res) => {
+  try {
+    const job = createJobFromBody(req.body);
+    jobs.push(job);
+    console.log(`✅ Created job: ${job.id}`);
+    res.status(201).json({
+      success: true,
+      job
     });
-});
-
-// Get worker
-app.get('/api/workers/:workerId', (req, res) => {
-    try {
-        const { workerId } = req.params;
-        
-        if (!database.workers[workerId]) {
-            database.workers[workerId] = {
-                id: workerId,
-                name: `Worker ${workerId.slice(-4)}`,
-                phone: workerId,
-                field: 'electronics',
-                isPremium: false,
-                completedJobs: 0,
-                totalEarnings: 0,
-                rating: 4.5,
-                createdAt: Date.now()
-            };
-        }
-        
-        res.json({
-            success: true,
-            data: database.workers[workerId]
-        });
-    } catch (error) {
-        res.status(500).json({
-            success: false,
-            error: error.message
-        });
-    }
-});
-
-// Update worker field
-app.patch('/api/workers/:workerId/field', (req, res) => {
-    try {
-        const { workerId } = req.params;
-        const { field } = req.body;
-        
-        if (!database.workers[workerId]) {
-            return res.status(404).json({
-                success: false,
-                error: 'Worker not found'
-            });
-        }
-        
-        database.workers[workerId].field = field;
-        
-        res.json({
-            success: true,
-            data: database.workers[workerId]
-        });
-    } catch (error) {
-        res.status(500).json({
-            success: false,
-            error: error.message
-        });
-    }
-});
-
-// Get jobs
-app.get('/api/jobs', (req, res) => {
-    try {
-        const { status = 'available', workerId } = req.query;
-        let jobs = Object.values(database.jobs);
-        
-        if (status !== 'all') {
-            jobs = jobs.filter(job => job.status === status);
-        }
-        
-        if (workerId) {
-            jobs = jobs.filter(job => job.workerId === workerId);
-        }
-        
-        jobs.sort((a, b) => b.createdAt - a.createdAt);
-        
-        res.json({
-            success: true,
-            data: jobs,
-            count: jobs.length
-        });
-    } catch (error) {
-        res.status(500).json({
-            success: false,
-            error: error.message
-        });
-    }
-});
-
-// Create job
-app.post('/api/jobs', (req, res) => {
-    try {
-        const jobData = req.body;
-        const jobId = 'JOB' + Date.now();
-        
-        database.jobs[jobId] = {
-            id: jobId,
-            title: jobData.title || 'Service Request',
-            serviceType: jobData.serviceType || 'general',
-            serviceName: jobData.serviceName || 'Service',
-            customerName: jobData.customerName || 'Customer',
-            contact: jobData.contact || '',
-            location: jobData.location || '',
-            locationCoords: jobData.locationCoords || null,
-            description: jobData.description || '',
-            amount: jobData.amount || '₹500',
-            status: 'available',
-            workerId: null,
-            createdAt: Date.now(),
-            timestamp: new Date().toLocaleString()
-        };
-        
-        res.json({
-            success: true,
-            data: database.jobs[jobId],
-            message: 'Job created successfully'
-        });
-    } catch (error) {
-        res.status(500).json({
-            success: false,
-            error: error.message
-        });
-    }
-});
-
-// Accept job
-app.post('/api/jobs/:jobId/accept', (req, res) => {
-    try {
-        const { jobId } = req.params;
-        const { workerId } = req.body;
-        
-        if (!database.jobs[jobId]) {
-            return res.status(404).json({
-                success: false,
-                error: 'Job not found'
-            });
-        }
-        
-        if (database.jobs[jobId].status !== 'available') {
-            return res.status(400).json({
-                success: false,
-                error: 'Job is not available'
-            });
-        }
-        
-        database.jobs[jobId].status = 'accepted';
-        database.jobs[jobId].workerId = workerId;
-        database.jobs[jobId].acceptedAt = Date.now();
-        
-        res.json({
-            success: true,
-            data: database.jobs[jobId],
-            message: 'Job accepted successfully'
-        });
-    } catch (error) {
-        res.status(500).json({
-            success: false,
-            error: error.message
-        });
-    }
-});
-
-// Complete job
-app.post('/api/jobs/:jobId/complete', (req, res) => {
-    try {
-        const { jobId } = req.params;
-        const { workerId, timeSpent, location } = req.body;
-        
-        if (!database.jobs[jobId]) {
-            return res.status(404).json({
-                success: false,
-                error: 'Job not found'
-            });
-        }
-        
-        const earnings = parseInt(database.jobs[jobId].amount.replace(/[^0-9]/g, '')) || 500;
-        
-        database.jobs[jobId].status = 'completed';
-        database.jobs[jobId].completedAt = Date.now();
-        database.jobs[jobId].completionData = {
-            timeSpent,
-            location
-        };
-        
-        if (database.workers[workerId]) {
-            database.workers[workerId].completedJobs++;
-            database.workers[workerId].totalEarnings += earnings;
-        }
-        
-        res.json({
-            success: true,
-            data: database.jobs[jobId],
-            earnings,
-            message: 'Job completed successfully'
-        });
-    } catch (error) {
-        res.status(500).json({
-            success: false,
-            error: error.message
-        });
-    }
-});
-
-// Verify payment
-app.post('/api/payments/verify', (req, res) => {
-    try {
-        const { workerId, imageHash, screenshotTime } = req.body;
-        
-        if (!database.workers[workerId]) {
-            return res.status(404).json({
-                success: false,
-                error: 'Worker not found'
-            });
-        }
-        
-        const paymentId = 'PAY' + Date.now();
-        
-        database.payments[paymentId] = {
-            id: paymentId,
-            workerId,
-            imageHash,
-            screenshotTime,
-            amount: database.config.premiumPrice,
-            status: 'verified',
-            submittedAt: Date.now()
-        };
-        
-        database.workers[workerId].isPremium = true;
-        database.workers[workerId].premiumActivatedAt = Date.now();
-        
-        res.json({
-            success: true,
-            data: database.payments[paymentId],
-            worker: database.workers[workerId],
-            message: 'Payment verified successfully'
-        });
-    } catch (error) {
-        res.status(500).json({
-            success: false,
-            error: error.message
-        });
-    }
-});
-
-// Get system config
-app.get('/api/config', (req, res) => {
-    res.json({
-        success: true,
-        data: database.config
+  } catch (err) {
+    console.error("❌ Error creating job:", err);
+    res.status(500).json({
+      success: false,
+      message: "Failed to create job",
+      error: err.message
     });
+  }
 });
 
+// -----------------------------
+// PUT /api/jobs/:id – update job
+// -----------------------------
+app.put("/api/jobs/:id", (req, res) => {
+  try {
+    const pathId = req.params.id;
+    const { status, workerId, earnings, timeSpent, completionPhotoURL } =
+      req.body || {};
+
+    console.log(`\n🔄 Update request for job: ${pathId}`);
+    console.log(`   Status: ${status}`);
+    console.log(`   WorkerId: ${workerId}`);
+
+    // Find by primary id or by legacy fields if any
+    const index = jobs.findIndex(
+      (j) => j.id === pathId || j.jobId === pathId || j._id === pathId
+    );
+
+    if (index === -1) {
+      console.log(`❌ Job not found: ${pathId}`);
+      console.log(`   Available jobs: ${jobs.map(j => j.id).join(', ')}`);
+      return res.status(404).json({
+        success: false,
+        message: `Job not found: ${pathId}`
+      });
+    }
+
+    const job = jobs[index];
+    console.log(`📦 Found job: ${job.id} (current status: ${job.status})`);
+
+    // -----------------
+    // Status transitions
+    // -----------------
+
+    // Accepting a job
+    if (status === "accepted") {
+      console.log(`   Attempting to accept job...`);
+      
+      // Only allow accept when job is currently available/pending
+      if (job.status !== "available" && job.status !== "pending") {
+        console.log(`   ❌ Job already taken (status: ${job.status})`);
+        return res.status(400).json({
+          success: false,
+          message: `Job already taken (current status: ${job.status})`
+        });
+      }
+
+      if (!workerId) {
+        console.log(`   ❌ Missing workerId`);
+        return res.status(400).json({
+          success: false,
+          message: "workerId is required to accept a job"
+        });
+      }
+
+      job.status = "accepted";
+      job.assignedTo = workerId;
+      job.workerId = workerId;
+      job.acceptedAt = Date.now();
+      console.log(`   ✅ Job accepted by worker: ${workerId}`);
+    }
+
+    // Rejecting a job (put it back to available)
+    else if (status === "rejected") {
+      console.log(`   ℹ️ Job rejected, setting back to available`);
+      job.status = "available";
+      job.assignedTo = null;
+      job.workerId = null;
+    }
+
+    // Marking job as completed
+    else if (status === "completed") {
+      console.log(`   Attempting to complete job...`);
+      
+      // Only the assigned worker can complete it
+      if (!workerId || job.assignedTo !== workerId) {
+        console.log(`   ❌ Wrong worker or not assigned (assigned: ${job.assignedTo}, requesting: ${workerId})`);
+        return res.status(400).json({
+          success: false,
+          message: "Only assigned worker can complete this job"
+        });
+      }
+
+      job.status = "completed";
+      if (typeof earnings === "number") job.earnings = earnings;
+      if (typeof timeSpent === "number") job.timeSpent = timeSpent;
+      if (completionPhotoURL) job.completionPhotoURL = completionPhotoURL;
+      job.completedAt = Date.now();
+      console.log(`   ✅ Job completed`);
+    }
+
+    // Generic status change (admin or other flows)
+    else if (status) {
+      console.log(`   ℹ️ Generic status change to: ${status}`);
+      job.status = status;
+    }
+
+    // Persist back into array
+    jobs[index] = job;
+
+    console.log(`✅ Job updated successfully: ${job.id}`);
+    console.log(`   Final status: ${job.status}`);
+    console.log(`   Assigned to: ${job.assignedTo}\n`);
+
+    res.json({
+      success: true,
+      job
+    });
+  } catch (err) {
+    console.error("❌ Error updating job:", err);
+    res.status(500).json({
+      success: false,
+      message: "Failed to update job",
+      error: err.message
+    });
+  }
+});
+
+// -----------------------------
+// DELETE /api/jobs/:id – delete job (optional)
+// -----------------------------
+app.delete("/api/jobs/:id", (req, res) => {
+  try {
+    const pathId = req.params.id;
+    const index = jobs.findIndex(
+      (j) => j.id === pathId || j.jobId === pathId || j._id === pathId
+    );
+
+    if (index === -1) {
+      return res.status(404).json({
+        success: false,
+        message: "Job not found"
+      });
+    }
+
+    jobs.splice(index, 1);
+    console.log(`🗑️ Deleted job: ${pathId}`);
+    
+    res.json({
+      success: true,
+      message: "Job deleted successfully"
+    });
+  } catch (err) {
+    console.error("❌ Error deleting job:", err);
+    res.status(500).json({
+      success: false,
+      message: "Failed to delete job",
+      error: err.message
+    });
+  }
+});
+
+// -----------------------------
+// Root
+// -----------------------------
+app.get("/", (req, res) => {
+  res.json({
+    message: "YMIT backend running",
+    status: "online",
+    jobs: jobs.length,
+    endpoints: {
+      "GET /api/jobs": "List all jobs",
+      "POST /api/jobs": "Create a new job",
+      "PUT /api/jobs/:id": "Update a job",
+      "DELETE /api/jobs/:id": "Delete a job"
+    }
+  });
+});
+
+// -----------------------------
+// 404 handler
+// -----------------------------
+app.use((req, res) => {
+  res.status(404).json({
+    success: false,
+    message: `Route not found: ${req.method} ${req.path}`
+  });
+});
+
+// -----------------------------
+// Error handler
+// -----------------------------
+app.use((err, req, res, next) => {
+  console.error("Server error:", err);
+  res.status(500).json({
+    success: false,
+    message: "Internal server error",
+    error: err.message
+  });
+});
+
+// -----------------------------
 // Start server
+// -----------------------------
 app.listen(PORT, () => {
-    console.log('╔════════════════════════════════════════════╗');
-    console.log('║   🚀 YMIT BACKEND SERVER RUNNING          ║');
-    console.log('╠════════════════════════════════════════════╣');
-    console.log(`║   📍 Port: ${PORT}                            ║`);
-    console.log(`║   🌐 URL: http://localhost:${PORT}/api      ║`);
-    console.log('║   ✅ Ready to receive requests             ║');
-    console.log('╚════════════════════════════════════════════╝');
+  console.log(`
+╔═══════════════════════════════════════╗
+║   🚀 YMIT BACKEND SERVER RUNNING     ║
+╠═══════════════════════════════════════╣
+║   📡 Port: ${PORT.toString().padEnd(27)}║
+║   🌐 URL: http://localhost:${PORT}/api    ║
+║   ✅ Ready to receive requests        ║
+╚═══════════════════════════════════════╝
+  `);
 });
